@@ -2483,3 +2483,91 @@ test( "Self-closing tags inside attribute values are not rewritten (CVE-2020-110
 	check( jQuery( payload ), "jQuery()" );
 	check( jQuery.parseHTML( payload ), "jQuery.parseHTML()" );
 });
+
+test( "Sanitized <option> HTML is not re-parsed inside a <select> wrapper (CVE-2020-11023)", function() {
+	var tags = [ "option", "optgroup" ],
+		div = document.createElement( "div" );
+
+	// Support: IE<=9 only
+	// IE <=9 still needs the <select> wrapper to create <option> elements.
+	div.innerHTML = "<option></option>";
+	if ( !div.lastChild ) {
+		expect( 1 );
+		ok( true, "<option> elements still need the <select> wrapper in this browser" );
+		return;
+	}
+
+	expect( tags.length * 20 );
+
+	// A sanitizer parsing this HTML outside of a <select> sees a harmless <style> element
+	// inside the <option>; wrapping it in a <select> could turn the <style> contents into markup.
+	jQuery.each( tags, function( index, tag ) {
+		var styleText ="</" + tag + "></select><img src=x onerror=jQuery.noop()>",
+			payload = "<" + tag + "><style>" + styleText + "</style>",
+			escaped;
+
+		function check( nodes, method ) {
+			var $nodes = jQuery( nodes );
+
+			equal( $nodes.length, 1, method + ": a single element is created" );
+			equal( $nodes.length && $nodes[ 0 ].nodeName.toLowerCase(), tag,
+				method + ": the element is an <" + tag + ">" );
+			equal( $nodes.filter( "img" ).length + $nodes.find( "img" ).length, 0,
+				method + ": no <img> element escapes the <style> element" );
+			equal( $nodes.find( "style" ).text(), styleText,
+				method + ": the markup stays inside the <style> text" );
+		}
+
+		check( jQuery( "<div></div>" ).html( payload ).contents(), ".html()" );
+		check( jQuery( "<div></div>" ).append( payload ).contents(), ".append()" );
+		check( jQuery( payload ), "jQuery()" );
+		check( jQuery.parseHTML( payload ), "jQuery.parseHTML()" );
+
+		// Markup following the <option> must not be hoisted out of a <select> wrapper
+		escaped = jQuery.parseHTML( "<" + tag + "></" + tag + "><input type='text'>" );
+		equal( escaped.length, 2, "<" + tag + "> followed by <input>: both elements are created" );
+		equal( escaped.length && escaped[ 0 ].nodeName.toLowerCase(), tag,
+			"<" + tag + "> followed by <input>: first element is the <" + tag + ">" );
+		equal( escaped.length && escaped[ escaped.length - 1 ].nodeName.toLowerCase(), "input",
+			"<" + tag + "> followed by <input>: last element is the <input>" );
+		equal( jQuery( "<div></div>" ).append( "<" + tag + "></" + tag + "><input type='text'>" ).children().length, 2,
+			"<" + tag + "> followed by <input>: .append() inserts both elements" );
+	});
+});
+
+asyncTest( "Sanitized <option> HTML does not execute injected handlers (CVE-2020-11023)", function() {
+	var executed = [],
+		methods = [ ".html()", ".append()", "jQuery()", "jQuery.parseHTML()" ],
+		div = document.createElement( "div" );
+
+	expect( 1 );
+
+	// Support: IE<=9 only
+	// IE <=9 still needs the <select> wrapper to create <option> elements.
+	div.innerHTML = "<option></option>";
+	if ( !div.lastChild ) {
+		ok( true, "<option> elements still need the <select> wrapper in this browser" );
+		start();
+		return;
+	}
+
+	Globals.register( "cve202011023Xss" );
+	window.cve202011023Xss = function( index ) {
+		executed.push( methods[ index ] );
+	};
+
+	function payload( index ) {
+		return "<option><style></option></select><img src=x onerror=cve202011023Xss(" +
+			index + ")></style>";
+	}
+
+	jQuery( "<div></div>" ).appendTo( "#qunit-fixture" ).html( payload( 0 ) );
+	jQuery( "<div></div>" ).appendTo( "#qunit-fixture" ).append( payload( 1 ) );
+	jQuery( payload( 2 ) );
+	jQuery.parseHTML( payload( 3 ) );
+
+	setTimeout(function() {
+		deepEqual( executed, [], "No injected event handler was executed" );
+		start();
+	}, 1000 );
+});
